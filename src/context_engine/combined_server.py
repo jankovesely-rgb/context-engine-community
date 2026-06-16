@@ -29,31 +29,38 @@ TOKEN_LIFETIME = 365 * 24 * 3600
 
 
 class BearerTokenMiddleware:
-    """ASGI middleware — checks Bearer token or ?token= query param."""
+    """ASGI middleware — checks Bearer token or ?token= query param.
+
+    Only enforces auth on /sse (initial connection). The /messages/ endpoint
+    is protected implicitly by the session_id generated during SSE handshake.
+    """
     def __init__(self, app: ASGIApp, api_key: str):
         self.app = app
         self.api_key = api_key
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] in ("http", "websocket"):
-            headers = dict(scope.get("headers", []))
-            auth_header = headers.get(b"authorization", b"").decode()
+            path = scope.get("path", "")
+            # Only enforce token on the SSE connection endpoint, not on /messages/
+            if path.rstrip("/") == "/sse":
+                headers = dict(scope.get("headers", []))
+                auth_header = headers.get(b"authorization", b"").decode()
 
-            query_string = scope.get("query_string", b"").decode()
-            token_param = ""
-            for param in query_string.split("&"):
-                if param.startswith("token="):
-                    token_param = param[6:]
-                    break
+                query_string = scope.get("query_string", b"").decode()
+                token_param = ""
+                for param in query_string.split("&"):
+                    if param.startswith("token="):
+                        token_param = param[6:]
+                        break
 
-            if auth_header == f"Bearer {self.api_key}" or token_param == self.api_key:
-                await self.app(scope, receive, send)
+                if auth_header == f"Bearer {self.api_key}" or token_param == self.api_key:
+                    await self.app(scope, receive, send)
+                    return
+
+                response = PlainTextResponse(
+                    "Unauthorized. Use: Authorization: Bearer <api_key>", status_code=401)
+                await response(scope, receive, send)
                 return
-
-            response = PlainTextResponse(
-                "Unauthorized. Use: Authorization: Bearer <api_key>", status_code=401)
-            await response(scope, receive, send)
-            return
         await self.app(scope, receive, send)
 
 
